@@ -1,0 +1,18 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments (if you create one later)
+venv/
+env/
+.venv/
+
+# Environment variables (keeps your secrets out of the repo)
+.env
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
