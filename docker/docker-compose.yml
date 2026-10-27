@@ -1,0 +1,20 @@
+
+
+services:
+  # container with valkey db
+  valkey-db:
+    image: valkey/valkey:latest
+    container_name: valkey_server
+    ports:
+      - "6379:6379" # share the db port for outside th econtainer
+
+  # 2. Kontener z serwerem HTTP (App 1)
+  app1:
+    build:
+      context: ..                      # looking for app.py and requirements in .. directory
+      dockerfile: docker/Dockerfile  # where to look for Dockerfile
+    container_name: app_serv
+    ports:
+      - "8000:8000" # port for http requests
+    depends_on:
+      - valkey-db   # app will wait for db to be ready
