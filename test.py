@@ -1,29 +1,40 @@
 import requests
+import time
+from config import BASE_URL, MAX_REQUESTS, TIME_WINDOW
 
-BASE_URL = "http://localhost:8000"
 CLIENT_IP = "127.0.0.1"
 
-print(f"Rozpoczynam test dla IP: {CLIENT_IP}...\n")
+print(f"Rozpoczynam test Sliding Window dla IP: {CLIENT_IP}...\n")
 
-# 1. incrementaion
-print("Wysyłam zapytanie nr 1 (POST)...")
-res1 = requests.post(f"{BASE_URL}/client/{CLIENT_IP}/increment")
-print("Odpowiedź:", res1.json())
+# 0. Czyszczenie starego klucza w bazie przed rozpoczęciem testu
+requests.post(f"{BASE_URL}/client/{CLIENT_IP}")
+print("Wyczyszczono poprzedni stan klienta w bazie.\n")
 
-# 2. incrementation
-print("Wysyłam zapytanie nr 2 (POST)...")
-res2 = requests.post(f"{BASE_URL}/client/{CLIENT_IP}/increment")
-print("Odpowiedź:", res2.json())
+# 1. Test przekroczenia limitu
+print(f"Wysyłam {MAX_REQUESTS + 2} zapytań, aby wymusić błąd 429...")
+for i in range(1, MAX_REQUESTS + 3):
+    res = requests.post(f"{BASE_URL}/client/{CLIENT_IP}/increment")
 
-# 3. get and verify
+    if res.status_code == 429:
+        print(f"Zapytanie nr {i}: ZABLOKOWANE (429 Too Many Requests)")
+    elif i == 1 or i == MAX_REQUESTS:
+        print(f"Zapytanie nr {i}: {res.json()}")
+
+# 2. Pobranie i weryfikacja stanu
 print("\nSprawdzam ostateczny wynik w bazie (GET)...")
 res_get = requests.get(f"{BASE_URL}/client/{CLIENT_IP}")
 dane = res_get.json()
-
 print(f"Dane pobrane z serwera: {dane}")
 
-# test
-if dane["requests_numb"] == 2:
-    print("Wartość w bazie wynosi dokładnie 2.")
+# 3. Test wygaśnięcia okna czasowego
+print(f"\nCzekam {TIME_WINDOW + 1} sekund na przesunięcie okna czasowego...")
+time.sleep(TIME_WINDOW + 1)
+
+print("\nWysyłam nowe zapytanie po upływie czasu okna...")
+res_after_wait = requests.post(f"{BASE_URL}/client/{CLIENT_IP}/increment")
+print(f"Odpowiedź: {res_after_wait.json()}")
+
+if res_after_wait.status_code == 200 and res_after_wait.json()["requests_numb"] == 1:
+    print("Test zaliczony: Okno czasowe przesunęło się i licznik wynosi 1.")
 else:
-    print(f"Oczekiwano 2, otrzymano {dane['requests_numb']}")
+    print("Test nieudany: Limit nie został wyzerowany.")
