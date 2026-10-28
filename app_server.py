@@ -1,61 +1,73 @@
+from __future__ import annotations
+
+import threading
 import time
-from fastapi import FastAPI, HTTPException
-from valkey import Valkey
-from config import VALKEY_HOST, VALKEY_PORT, MAX_REQUESTS, TIME_WINDOW
+import uvicorn
+from fastapi import Depends, FastAPI
 
-app = FastAPI(title="Valkey Rate Limiter API - Sliding Window")
+from distributed_rate_limiter import RateLimiterService
 
-# Połączenie z bazą Valkey w Dockerze
-r = Valkey(host=VALKEY_HOST, port=VALKEY_PORT, db=0, decode_responses=True)
 
-# 1. RESET / CZYSZCZENIE stanu klienta
-@app.post("/client/{client_id}")
-def reset_client(client_id: str):
-    # Usuwa klucz (przydatne do czyszczenia starych danych przed testem)
-    r.delete(client_id)
-    return {"message": "Zresetowano", "client_id": client_id, "requests_numb": 0}
+def create_app() -> FastAPI:
+    app = FastAPI(title="Valkey Rate Limiter API - Sliding Window")
+    limiter_service = RateLimiterService()
 
-# 2. SLIDING WINDOW (na bazie Sorted Sets)
-@app.post("/client/{client_id}/increment")
-def increment_client(client_id: str):
-    now = time.time()
-    window_start = now - TIME_WINDOW
+    def get_limiter() -> RateLimiterService:
+        return limiter_service
 
-    # Krok 1: Usuń ze zbioru zapytania starsze niż okno czasowe (starsze niż 60s)
-    r.zremrangebyscore(client_id, 0, window_start)
+    @app.post("/client/{client_id}")
+    async def reset_client(
+        client_id: str, service: RateLimiterService = Depends(get_limiter)
+    ):
+        return service.reset_client(client_id)
 
-    # Krok 2: Policz, ile zapytań znajduje się obecnie w oknie
-    current_requests = r.zcard(client_id)
+    @app.post("/client/{client_id}/increment")
+    async def increment_client(
+        client_id: str, service: RateLimiterService = Depends(get_limiter)
+    ):
+        return service.increment_client(client_id)
 
-    # Krok 3: Sprawdź, czy limit został już osiągnięty
-    if current_requests >= MAX_REQUESTS:
-        raise HTTPException(
-            status_code=429,
-            detail="Przekroczono limit zapytań (Too Many Requests)"
-        )
+    @app.get("/client/{client_id}")
+    async def get_client(
+        client_id: str, service: RateLimiterService = Depends(get_limiter)
+    ):
+        return service.get_client_status(client_id)
 
-    # Krok 4: Dodaj nowe zapytanie (unikalna nazwa w nanosekundach, waga = czas w sekundach)
-    r.zadd(client_id, {str(time.time_ns()): now})
+    return app
 
-    # Krok 5: Odśwież TTL klucza, aby baza automatycznie posprzątała po nieaktywnym kliencie
-    r.expire(client_id, TIME_WINDOW)
 
-    return {
-        "message": "Zwiększono",
-        "client_id": client_id,
-        "requests_numb": current_requests + 1
-    }
+class UvicornServerThread(threading.Thread):
+    def __init__(self, host: str, port: int):
+        super().__init__(daemon=True)
+        self.host = host
+        self.port = port
+        self.server: uvicorn.Server | None = None
 
-# 3. GET (sprawdzenie aktualnego stanu w oknie)
-@app.get("/client/{client_id}")
-def get_client(client_id: str):
-    if not r.exists(client_id):
-        raise HTTPException(status_code=404, detail="Nie znaleziono klienta")
+    def run(self) -> None:
+        app = create_app()
+        config = uvicorn.Config(app, host=self.host, port=self.port, log_level="warning")
+        self.server = uvicorn.Server(config)
+        self.server.run()
 
-    # Przed odczytem usuwamy przeterminowane wpisy, aby zwrócić realny stan okna
-    now = time.time()
-    r.zremrangebyscore(client_id, 0, now - TIME_WINDOW)
+    def wait_until_started(self, timeout: float = 10.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.server and self.server.started:
+                return True
+            time.sleep(0.05)
+        return False
 
-    count = r.zcard(client_id)
-    ttl = r.ttl(client_id)
-    return {"client_id": client_id, "requests_numb": count, "ttl_remaining": ttl}
+    def stop(self) -> None:
+        if self.server is not None:
+            self.server.should_exit = True
+
+
+def run_server(host: str = "0.0.0.0", port: int = 8000) -> None:
+    uvicorn.run(create_app(), host=host, port=port)
+
+
+app = create_app()
+
+
+if __name__ == "__main__":
+    run_server()

@@ -6,10 +6,10 @@ services:
     image: valkey/valkey:latest
     container_name: valkey_server
     ports:
-      - "6379:6379" # share the db port for outside th econtainer
+      - "6379:6379" # share the db port for outside the container
 
   # 2. Kontener z serwerem HTTP (App 1)
-  app1:
+  app:
     build:
       context: ..                      # looking for app.py and requirements in .. directory
       dockerfile: docker/Dockerfile  # where to look for Dockerfile
