@@ -38,22 +38,48 @@ def request_sender(
     start_delay: float,
     interval: float,
     requests_count: int,
-    statuses: Counter,
-    lock: threading.Lock,
+    worker_result: list[Counter],
+    worker_client_values: list[list[int]],
+    in_flight_state: dict[str, int],
+    in_flight_lock: threading.Lock,
+    worker_index: int,
 ) -> None:
+    local_statuses: Counter = Counter()
+    local_client_values: list[int] = []
     time.sleep(start_delay)
     for _ in range(requests_count):
+        with in_flight_lock:
+            in_flight_state["count"] += 1
+            in_flight_count = in_flight_state["count"]
+
         try:
             response = requests.post(
                 f"{base_url}/client/{client_id}/increment",
                 timeout=2.0,
             )
-            with lock:
-                statuses[response.status_code] += 1
+            local_statuses[response.status_code] += 1
+            if response.status_code == 200:
+                payload = response.json()
+                value = payload.get("requests_numb")
+                if isinstance(value, int):
+                    local_client_values.append(value)
+                    if in_flight_count == 1:
+                        print(
+                            f"[Lua queue size=1] client_id='{client_id}', requests_numb={value}, server={base_url}"
+                        )
+                    else:
+                        print(
+                            f"\t[Lua queue size>1] waiting scripts detected ({in_flight_count}) "
+                            f"client_id='{client_id}', requests_numb={value}, server={base_url}"
+                        )
         except requests.RequestException:
-            with lock:
-                statuses[-1] += 1
+            local_statuses[-1] += 1
+        finally:
+            with in_flight_lock:
+                in_flight_state["count"] -= 1
         time.sleep(interval)
+    worker_result[worker_index] = local_statuses
+    worker_client_values[worker_index] = local_client_values
 
 
 def run_distributed_test() -> None:
@@ -82,8 +108,10 @@ def run_distributed_test() -> None:
         if response_404.status_code != 404:
             raise AssertionError("Expected HTTP 404 for non-existent client.")
 
-        statuses: Counter = Counter()
-        lock = threading.Lock() # lock for multithread updates
+        worker_result: list[Counter] = [Counter() for _ in range(N_SERVERS)]
+        worker_client_values: list[list[int]] = [[] for _ in range(N_SERVERS)]
+        in_flight_state = {"count": 0}
+        in_flight_lock = threading.Lock()
 
         workers: list[threading.Thread] = [] # list of threads sending requests
         for i in range(N_SERVERS): # each thread for each server app1..n
@@ -95,8 +123,11 @@ def run_distributed_test() -> None:
                     START_DELAYS[i],
                     REQUEST_INTERVALS[i],
                     REQUESTS_PER_SERVER,
-                    statuses,
-                    lock,
+                    worker_result,
+                    worker_client_values,
+                    in_flight_state,
+                    in_flight_lock,
+                    i,
                 ),
             )
             workers.append(worker)
@@ -104,6 +135,10 @@ def run_distributed_test() -> None:
 
         for worker in workers:
             worker.join()
+
+        statuses: Counter = Counter()
+        for local_statuses in worker_result:
+            statuses.update(local_statuses)
 
         total_requests = N_SERVERS * REQUESTS_PER_SERVER # how many requests was sent totally by all servers
         print(f"Sent a total of {total_requests} requests across 5 servers.")
