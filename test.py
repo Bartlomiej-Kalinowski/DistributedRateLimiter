@@ -5,7 +5,7 @@ import time
 import requests
 
 from app_server import UvicornServerThread
-from config import MAX_REQUESTS
+from config import MAX_REQUESTS, TIME_WINDOW
 
 HOST = "127.0.0.1"
 N_SERVERS = 5
@@ -82,6 +82,61 @@ def request_sender(
     worker_client_values[worker_index] = local_client_values
 
 
+def run_fixed_window_test(base_urls: list[str]) -> None:
+    client_id = f"{CLIENT_ID}-fixed-window"
+    reset_response = requests.post(
+        f"{base_urls[0]}/client/{client_id}", timeout=2.0
+    )
+    if reset_response.status_code != 200:
+        raise AssertionError("Could not reset fixed-window test client.")
+
+    for request_number in range(1, MAX_REQUESTS + 1):
+        base_url = base_urls[(request_number - 1) % len(base_urls)]
+        response = requests.post(
+            f"{base_url}/client/{client_id}/increment/fixed-window",
+            timeout=2.0,
+        )
+        if response.status_code != 200:
+            raise AssertionError(
+                f"Fixed-window request {request_number} was rejected: HTTP {response.status_code}."
+            )
+
+        payload = response.json()
+        if payload.get("requests_numb") != request_number:
+            raise AssertionError("Fixed-window counter did not increment correctly.")
+        ttl = payload.get("ttl_remaining")
+        if not isinstance(ttl, int) or not 1 <= ttl <= TIME_WINDOW:
+            raise AssertionError(f"Fixed-window TTL is invalid: {ttl}.")
+
+    rejected_response = requests.post(
+        f"{base_urls[-1]}/client/{client_id}/increment/fixed-window",
+        timeout=2.0,
+    )
+    if rejected_response.status_code != 429:
+        raise AssertionError("Fixed-window limit was not enforced across servers.")
+
+    reset_response = requests.post(
+        f"{base_urls[0]}/client/{client_id}", timeout=2.0
+    )
+    if reset_response.status_code != 200:
+        raise AssertionError("Could not reset fixed-window test client.")
+
+    reset_response = requests.post(
+        f"{base_urls[-1]}/client/{client_id}/increment/fixed-window",
+        timeout=2.0,
+    )
+    if (
+        reset_response.status_code != 200
+        or reset_response.json().get("requests_numb") != 1
+    ):
+        raise AssertionError("Fixed-window counter was not reset correctly.")
+
+    print(
+        f"Fixed-window test passed: {MAX_REQUESTS} requests allowed across servers, "
+        "the next was rejected, TTL was set, and reset succeeded."
+    )
+
+
 def run_distributed_test() -> None:
     ports = [START_PORT + i for i in range(N_SERVERS)] # list of ports for app1..n
     base_urls = [f"http://{HOST}:{port}" for port in ports] # URL for app ports above
@@ -96,6 +151,7 @@ def run_distributed_test() -> None:
                 raise RuntimeError(f"Server failed to start properly: {base_url}")
 
         print(f"Started {N_SERVERS} application servers on ports: {ports}")
+        run_fixed_window_test(base_urls)
 
         # Reset tested client state
         requests.post(f"{base_urls[0]}/client/{CLIENT_ID}", timeout=2.0)

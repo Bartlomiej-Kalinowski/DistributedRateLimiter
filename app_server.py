@@ -9,7 +9,7 @@ from distributed_rate_limiter import RateLimiterService
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Valkey Rate Limiter API - Sliding Window")
+    app = FastAPI(title="Valkey Rate Limiter API")
     limiter_service = RateLimiterService()
 
     def get_limiter() -> RateLimiterService:
@@ -26,6 +26,12 @@ def create_app() -> FastAPI:
         client_id: str, service: RateLimiterService = Depends(get_limiter)
     ):
         return service.increment_client(client_id)
+
+    @app.post("/client/{client_id}/increment/fixed-window")
+    async def increment_fixed_window_client(
+        client_id: str, service: RateLimiterService = Depends(get_limiter)
+    ):
+        return service.increment_fixed_window_client(client_id)
 
     @app.get("/client/{client_id}")
     async def get_client(
