@@ -1,13 +1,13 @@
 1. Główna implementacja
-[ ] [DO WERYFIKACJI] Instancje aplikacji odbierające żądania: Dodać obsługę z nagłówka X-API-Key lub IP jako alternatywę dla obecnego client_id w ścieżce.
+[ ] Instancje aplikacji odbierające żądania: Dodać obsługę z nagłówka X-API-Key lub IP jako alternatywę dla obecnego client_id w ścieżce.
 
-[ ] Licznik stałego okna (fixed-window): Prosta implementacja z użyciem wygasania (TTL).
+[x] Licznik stałego okna (fixed-window): Prosta implementacja z użyciem wygasania (TTL).
 
-[ ] [DO WERYFIKACJI] Licznik przesuwnego okna (sliding-window): Wykorzystanie posortowanych zbiorów (sorted sets) w Valkey.
+[x] Licznik przesuwnego okna (sliding-window): Wykorzystanie posortowanych zbiorów (sorted sets) w Valkey.
 
-[ ] [DO WERYFIKACJI] Globalne reguły ograniczania: Wymuszanie limitu (np. 100 żądań / 60s) współdzielonego przez wszystkie serwery.
+[x] Globalne reguły ograniczania: Wymuszanie limitu (np. 100 żądań / 60s) współdzielonego przez wszystkie serwery.
 
-[ ] [DO WERYFIKACJI] Decyzje atomowe: Użycie operacji atomowych Valkey, transakcji lub skryptów Lua.
+[x] Decyzje atomowe: Użycie operacji atomowych Valkey, transakcji lub skryptów Lua.
 
 [ ] Implementacja naiwna (nieatomowa): Sekwencja np. GET, inkrementacja, SET w celach porównawczych.
 
