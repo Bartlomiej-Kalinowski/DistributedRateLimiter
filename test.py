@@ -179,6 +179,96 @@ def run_naive_test(base_urls: list[str]) -> None:
     print(f"Final naive Valkey counter: {final_counter}")
 
 
+def run_client_identification_test(base_urls: list[str]) -> None:
+    api_key_headers = {"X-API-Key": "demo-key-123"}
+    api_key_client_id = "apikey:demo-key-123"
+    ip_client_id = "ip:127.0.0.1"
+
+    reset_response = requests.post(
+        f"{base_urls[0]}/reset", headers=api_key_headers, timeout=2.0
+    )
+    if reset_response.status_code != 200:
+        raise AssertionError("Could not reset API-key identified client.")
+
+    increment_response = requests.post(
+        f"{base_urls[0]}/increment", headers=api_key_headers, timeout=2.0
+    )
+    increment_payload = increment_response.json()
+    if (
+        increment_response.status_code != 200
+        or increment_payload.get("client_id") != api_key_client_id
+        or increment_payload.get("requests_numb") != 1
+    ):
+        raise AssertionError("API-key client identification or first increment failed.")
+
+    status_response = requests.get(
+        f"{base_urls[1]}/status", headers=api_key_headers, timeout=2.0
+    )
+    status_payload = status_response.json()
+    if (
+        status_response.status_code != 200
+        or status_payload.get("client_id") != api_key_client_id
+        or status_payload.get("requests_numb") != 1
+    ):
+        raise AssertionError("API-key client state was not shared across servers.")
+
+    increment_response = requests.post(
+        f"{base_urls[1]}/increment", headers=api_key_headers, timeout=2.0
+    )
+    increment_payload = increment_response.json()
+    if (
+        increment_response.status_code != 200
+        or increment_payload.get("client_id") != api_key_client_id
+        or increment_payload.get("requests_numb") != 2
+    ):
+        raise AssertionError("API-key client count did not increment across servers.")
+
+    status_response = requests.get(
+        f"{base_urls[0]}/status", headers=api_key_headers, timeout=2.0
+    )
+    status_payload = status_response.json()
+    if (
+        status_response.status_code != 200
+        or status_payload.get("client_id") != api_key_client_id
+        or status_payload.get("requests_numb") != 2
+    ):
+        raise AssertionError("API-key client status did not reflect the shared count.")
+
+    reset_response = requests.post(
+        f"{base_urls[0]}/reset", headers=api_key_headers, timeout=2.0
+    )
+    if reset_response.status_code != 200:
+        raise AssertionError("Could not clean up API-key identified client.")
+
+    reset_response = requests.post(f"{base_urls[0]}/reset", timeout=2.0)
+    if reset_response.status_code != 200:
+        raise AssertionError("Could not reset IP-identified client.")
+
+    increment_response = requests.post(f"{base_urls[0]}/increment", timeout=2.0)
+    increment_payload = increment_response.json()
+    if (
+        increment_response.status_code != 200
+        or increment_payload.get("client_id") != ip_client_id
+        or increment_payload.get("requests_numb") != 1
+    ):
+        raise AssertionError("IP fallback identification or first increment failed.")
+
+    status_response = requests.get(f"{base_urls[1]}/status", timeout=2.0)
+    status_payload = status_response.json()
+    if (
+        status_response.status_code != 200
+        or status_payload.get("client_id") != ip_client_id
+        or status_payload.get("requests_numb") != 1
+    ):
+        raise AssertionError("IP-identified client state was not shared across servers.")
+
+    reset_response = requests.post(f"{base_urls[0]}/reset", timeout=2.0)
+    if reset_response.status_code != 200:
+        raise AssertionError("Could not clean up IP-identified client.")
+
+    print("API-key and IP client identification checks passed across servers.")
+
+
 def run_distributed_test() -> None:
     ports = [START_PORT + i for i in range(N_SERVERS)] # list of ports for app1..n
     base_urls = [f"http://{HOST}:{port}" for port in ports] # URL for app ports above
@@ -193,6 +283,7 @@ def run_distributed_test() -> None:
                 raise RuntimeError(f"Server failed to start properly: {base_url}")
 
         print(f"Started {N_SERVERS} application servers on ports: {ports}")
+        run_client_identification_test(base_urls)
         run_fixed_window_test(base_urls)
         run_naive_test(base_urls)
 

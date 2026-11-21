@@ -1,5 +1,5 @@
 1. Główna implementacja
-[ ] Instancje aplikacji odbierające żądania: Dodać obsługę z nagłówka X-API-Key lub IP jako alternatywę dla obecnego client_id w ścieżce.
+[x] Instancje aplikacji odbierające żądania: Dodać obsługę z nagłówka X-API-Key lub IP jako alternatywę dla obecnego client_id w ścieżce.
 
 [x] Licznik stałego okna (fixed-window): Prosta implementacja z użyciem wygasania (TTL).
 
