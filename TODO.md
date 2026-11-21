@@ -9,7 +9,7 @@
 
 [x] Decyzje atomowe: Użycie operacji atomowych Valkey, transakcji lub skryptów Lua.
 
-[ ] Implementacja naiwna (nieatomowa): Sekwencja np. GET, inkrementacja, SET w celach porównawczych.
+[x] Implementacja naiwna (nieatomowa): Sekwencja np. GET, inkrementacja, SET w celach porównawczych.
 
 2. Rozproszona infrastruktura Valkey
 [ ] Wdrożenie klastra Valkey: Partycjonowanie i replikacja: min. 3 węzły primary i 3 repliki. Nie używać samego Sentinela.

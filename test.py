@@ -1,8 +1,11 @@
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+import os
 import threading
 import time
 
 import requests
+from valkey import Valkey
 
 from app_server import UvicornServerThread
 from config import MAX_REQUESTS, TIME_WINDOW
@@ -137,6 +140,45 @@ def run_fixed_window_test(base_urls: list[str]) -> None:
     )
 
 
+def run_naive_test(base_urls: list[str]) -> None:
+    client_id = f"{CLIENT_ID}-naive"
+    reset_response = requests.post(
+        f"{base_urls[0]}/client/{client_id}", timeout=2.0
+    )
+    if reset_response.status_code != 200:
+        raise AssertionError("Could not reset naive test client.")
+
+    def send_request(request_number: int) -> int:
+        base_url = base_urls[request_number % len(base_urls)]
+        try:
+            response = requests.post(
+                f"{base_url}/client/{client_id}/increment/naive", timeout=10.0
+            )
+            return response.status_code
+        except requests.RequestException:
+            return -1
+
+    total_requests = N_SERVERS * REQUESTS_PER_SERVER
+    with ThreadPoolExecutor(max_workers=total_requests) as executor:
+        statuses = Counter(executor.map(send_request, range(total_requests)))
+
+    status_summary = {200: statuses[200], 429: statuses[429]}
+    print(f"Naive response statuses: {status_summary}")
+    extra_allowed = max(0, statuses[200] - MAX_REQUESTS)
+    print(f"Naive requests allowed beyond MAX_REQUESTS={MAX_REQUESTS}: {extra_allowed}")
+
+    if statuses[200] < MAX_REQUESTS:
+        raise AssertionError(
+            f"Naive limiter allowed only {statuses[200]} requests; expected at least {MAX_REQUESTS}."
+        )
+
+    host = os.getenv("VALKEY_HOST", "localhost")
+    port = int(os.getenv("VALKEY_PORT", 6379))
+    db = Valkey(host=host, port=port, db=0, decode_responses=True)
+    final_counter = db.get(f"naive:{client_id}")
+    print(f"Final naive Valkey counter: {final_counter}")
+
+
 def run_distributed_test() -> None:
     ports = [START_PORT + i for i in range(N_SERVERS)] # list of ports for app1..n
     base_urls = [f"http://{HOST}:{port}" for port in ports] # URL for app ports above
@@ -152,6 +194,7 @@ def run_distributed_test() -> None:
 
         print(f"Started {N_SERVERS} application servers on ports: {ports}")
         run_fixed_window_test(base_urls)
+        run_naive_test(base_urls)
 
         # Reset tested client state
         requests.post(f"{base_urls[0]}/client/{CLIENT_ID}", timeout=2.0)

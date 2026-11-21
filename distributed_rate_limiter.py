@@ -72,8 +72,32 @@ class RateLimiterService:
         )
 
     def reset_client(self, client_id: str) -> dict:
-        self.db.delete(client_id, f"fixed-window:{client_id}")
+        self.db.delete(client_id, f"fixed-window:{client_id}", f"naive:{client_id}")
         return {"message": "Zresetowano", "client_id": client_id, "requests_numb": 0}
+
+    def increment_naive_client(self, client_id: str) -> dict:
+        key = f"naive:{client_id}"
+        raw = self.db.get(key)
+        current_requests = int(raw) if raw is not None else 0
+
+        if current_requests >= MAX_REQUESTS:
+            raise HTTPException(
+                status_code=429,
+                detail="Request limit exceeded (Too Many Requests)",
+            )
+
+        new_count = current_requests + 1
+        ttl = self.db.ttl(key) if current_requests > 0 else None
+        if ttl is not None and ttl > 0:
+            self.db.set(key, new_count, ex=ttl)
+        else:
+            self.db.set(key, new_count, ex=TIME_WINDOW)
+
+        return {
+            "message": "Completed",
+            "client_id": client_id,
+            "requests_numb": new_count,
+        }
 
     def increment_client(self, client_id: str) -> dict:
         now = time.time()

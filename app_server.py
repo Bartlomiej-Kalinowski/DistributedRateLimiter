@@ -33,6 +33,12 @@ def create_app() -> FastAPI:
     ):
         return service.increment_fixed_window_client(client_id)
 
+    @app.post("/client/{client_id}/increment/naive")
+    async def increment_naive_client(
+        client_id: str, service: RateLimiterService = Depends(get_limiter)
+    ):
+        return service.increment_naive_client(client_id)
+
     @app.get("/client/{client_id}")
     async def get_client(
         client_id: str, service: RateLimiterService = Depends(get_limiter)
