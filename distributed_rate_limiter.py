@@ -51,10 +51,53 @@ class RateLimiterService:
             return {count, ttl}
             """
         )
+        self._fixed_window_script = self.db.register_script(
+            """
+            local key = KEYS[1]
+            local window_seconds = tonumber(ARGV[1])
+            local max_requests = tonumber(ARGV[2])
+            local current_requests = tonumber(redis.call("GET", key) or "0")
+
+            if current_requests >= max_requests then
+                return {0, current_requests, redis.call("TTL", key)}
+            end
+
+            current_requests = redis.call("INCR", key)
+            if current_requests == 1 then
+                redis.call("EXPIRE", key, window_seconds)
+            end
+
+            return {1, current_requests, redis.call("TTL", key)}
+            """
+        )
 
     def reset_client(self, client_id: str) -> dict:
-        self.db.delete(client_id)
+        self.db.delete(client_id, f"fixed-window:{client_id}", f"naive:{client_id}")
         return {"message": "Zresetowano", "client_id": client_id, "requests_numb": 0}
+
+    def increment_naive_client(self, client_id: str) -> dict:
+        key = f"naive:{client_id}"
+        raw = self.db.get(key)
+        current_requests = int(raw) if raw is not None else 0
+
+        if current_requests >= MAX_REQUESTS:
+            raise HTTPException(
+                status_code=429,
+                detail="Request limit exceeded (Too Many Requests)",
+            )
+
+        new_count = current_requests + 1
+        ttl = self.db.ttl(key) if current_requests > 0 else None
+        if ttl is not None and ttl > 0:
+            self.db.set(key, new_count, ex=ttl)
+        else:
+            self.db.set(key, new_count, ex=TIME_WINDOW)
+
+        return {
+            "message": "Completed",
+            "client_id": client_id,
+            "requests_numb": new_count,
+        }
 
     def increment_client(self, client_id: str) -> dict:
         now = time.time()
@@ -74,6 +117,25 @@ class RateLimiterService:
             "message": "Completed",
             "client_id": client_id,
             "requests_numb": int(requests_count),
+        }
+
+    def increment_fixed_window_client(self, client_id: str) -> dict:
+        allowed, requests_count, ttl = self._fixed_window_script(
+            keys=[f"fixed-window:{client_id}"],
+            args=[TIME_WINDOW, MAX_REQUESTS],
+        )
+
+        if int(allowed) == 0:
+            raise HTTPException(
+                status_code=429,
+                detail="Request limit exceeded (Too Many Requests)",
+            )
+
+        return {
+            "message": "Completed",
+            "client_id": client_id,
+            "requests_numb": int(requests_count),
+            "ttl_remaining": int(ttl),
         }
 
     def get_client_status(self, client_id: str) -> dict:

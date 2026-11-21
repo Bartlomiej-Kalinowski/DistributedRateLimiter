@@ -3,17 +3,63 @@ from __future__ import annotations
 import threading
 import time
 import uvicorn
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Header, Request
 
 from distributed_rate_limiter import RateLimiterService
 
 
+def resolve_client_id(
+    request: Request,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> str:
+    if x_api_key and x_api_key.strip():
+        return f"apikey:{x_api_key.strip()}"
+
+    client_ip = request.client.host if request.client is not None else "unknown"
+    return f"ip:{client_ip}"
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Valkey Rate Limiter API - Sliding Window")
+    app = FastAPI(title="Valkey Rate Limiter API")
     limiter_service = RateLimiterService()
 
     def get_limiter() -> RateLimiterService:
         return limiter_service
+
+    @app.post("/increment")
+    async def increment_identified_client(
+        client_id: str = Depends(resolve_client_id),
+        service: RateLimiterService = Depends(get_limiter),
+    ):
+        return service.increment_client(client_id)
+
+    @app.post("/increment/fixed-window")
+    async def increment_identified_fixed_window_client(
+        client_id: str = Depends(resolve_client_id),
+        service: RateLimiterService = Depends(get_limiter),
+    ):
+        return service.increment_fixed_window_client(client_id)
+
+    @app.post("/increment/naive")
+    async def increment_identified_naive_client(
+        client_id: str = Depends(resolve_client_id),
+        service: RateLimiterService = Depends(get_limiter),
+    ):
+        return service.increment_naive_client(client_id)
+
+    @app.get("/status")
+    async def get_identified_client_status(
+        client_id: str = Depends(resolve_client_id),
+        service: RateLimiterService = Depends(get_limiter),
+    ):
+        return service.get_client_status(client_id)
+
+    @app.post("/reset")
+    async def reset_identified_client(
+        client_id: str = Depends(resolve_client_id),
+        service: RateLimiterService = Depends(get_limiter),
+    ):
+        return service.reset_client(client_id)
 
     @app.post("/client/{client_id}")
     async def reset_client(
@@ -26,6 +72,18 @@ def create_app() -> FastAPI:
         client_id: str, service: RateLimiterService = Depends(get_limiter)
     ):
         return service.increment_client(client_id)
+
+    @app.post("/client/{client_id}/increment/fixed-window")
+    async def increment_fixed_window_client(
+        client_id: str, service: RateLimiterService = Depends(get_limiter)
+    ):
+        return service.increment_fixed_window_client(client_id)
+
+    @app.post("/client/{client_id}/increment/naive")
+    async def increment_naive_client(
+        client_id: str, service: RateLimiterService = Depends(get_limiter)
+    ):
+        return service.increment_naive_client(client_id)
 
     @app.get("/client/{client_id}")
     async def get_client(

@@ -1,11 +1,14 @@
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+import os
 import threading
 import time
 
 import requests
+from valkey import Valkey
 
 from app_server import UvicornServerThread
-from config import MAX_REQUESTS
+from config import MAX_REQUESTS, TIME_WINDOW
 
 HOST = "127.0.0.1"
 N_SERVERS = 5
@@ -82,6 +85,190 @@ def request_sender(
     worker_client_values[worker_index] = local_client_values
 
 
+def run_fixed_window_test(base_urls: list[str]) -> None:
+    client_id = f"{CLIENT_ID}-fixed-window"
+    reset_response = requests.post(
+        f"{base_urls[0]}/client/{client_id}", timeout=2.0
+    )
+    if reset_response.status_code != 200:
+        raise AssertionError("Could not reset fixed-window test client.")
+
+    for request_number in range(1, MAX_REQUESTS + 1):
+        base_url = base_urls[(request_number - 1) % len(base_urls)]
+        response = requests.post(
+            f"{base_url}/client/{client_id}/increment/fixed-window",
+            timeout=2.0,
+        )
+        if response.status_code != 200:
+            raise AssertionError(
+                f"Fixed-window request {request_number} was rejected: HTTP {response.status_code}."
+            )
+
+        payload = response.json()
+        if payload.get("requests_numb") != request_number:
+            raise AssertionError("Fixed-window counter did not increment correctly.")
+        ttl = payload.get("ttl_remaining")
+        if not isinstance(ttl, int) or not 1 <= ttl <= TIME_WINDOW:
+            raise AssertionError(f"Fixed-window TTL is invalid: {ttl}.")
+
+    rejected_response = requests.post(
+        f"{base_urls[-1]}/client/{client_id}/increment/fixed-window",
+        timeout=2.0,
+    )
+    if rejected_response.status_code != 429:
+        raise AssertionError("Fixed-window limit was not enforced across servers.")
+
+    reset_response = requests.post(
+        f"{base_urls[0]}/client/{client_id}", timeout=2.0
+    )
+    if reset_response.status_code != 200:
+        raise AssertionError("Could not reset fixed-window test client.")
+
+    reset_response = requests.post(
+        f"{base_urls[-1]}/client/{client_id}/increment/fixed-window",
+        timeout=2.0,
+    )
+    if (
+        reset_response.status_code != 200
+        or reset_response.json().get("requests_numb") != 1
+    ):
+        raise AssertionError("Fixed-window counter was not reset correctly.")
+
+    print(
+        f"Fixed-window test passed: {MAX_REQUESTS} requests allowed across servers, "
+        "the next was rejected, TTL was set, and reset succeeded."
+    )
+
+
+def run_naive_test(base_urls: list[str]) -> None:
+    client_id = f"{CLIENT_ID}-naive"
+    reset_response = requests.post(
+        f"{base_urls[0]}/client/{client_id}", timeout=2.0
+    )
+    if reset_response.status_code != 200:
+        raise AssertionError("Could not reset naive test client.")
+
+    def send_request(request_number: int) -> int:
+        base_url = base_urls[request_number % len(base_urls)]
+        try:
+            response = requests.post(
+                f"{base_url}/client/{client_id}/increment/naive", timeout=10.0
+            )
+            return response.status_code
+        except requests.RequestException:
+            return -1
+
+    total_requests = N_SERVERS * REQUESTS_PER_SERVER
+    with ThreadPoolExecutor(max_workers=total_requests) as executor:
+        statuses = Counter(executor.map(send_request, range(total_requests)))
+
+    status_summary = {200: statuses[200], 429: statuses[429]}
+    print(f"Naive response statuses: {status_summary}")
+    extra_allowed = max(0, statuses[200] - MAX_REQUESTS)
+    print(f"Naive requests allowed beyond MAX_REQUESTS={MAX_REQUESTS}: {extra_allowed}")
+
+    if statuses[200] < MAX_REQUESTS:
+        raise AssertionError(
+            f"Naive limiter allowed only {statuses[200]} requests; expected at least {MAX_REQUESTS}."
+        )
+
+    host = os.getenv("VALKEY_HOST", "localhost")
+    port = int(os.getenv("VALKEY_PORT", 6379))
+    db = Valkey(host=host, port=port, db=0, decode_responses=True)
+    final_counter = db.get(f"naive:{client_id}")
+    print(f"Final naive Valkey counter: {final_counter}")
+
+
+def run_client_identification_test(base_urls: list[str]) -> None:
+    api_key_headers = {"X-API-Key": "demo-key-123"}
+    api_key_client_id = "apikey:demo-key-123"
+    ip_client_id = "ip:127.0.0.1"
+
+    reset_response = requests.post(
+        f"{base_urls[0]}/reset", headers=api_key_headers, timeout=2.0
+    )
+    if reset_response.status_code != 200:
+        raise AssertionError("Could not reset API-key identified client.")
+
+    increment_response = requests.post(
+        f"{base_urls[0]}/increment", headers=api_key_headers, timeout=2.0
+    )
+    increment_payload = increment_response.json()
+    if (
+        increment_response.status_code != 200
+        or increment_payload.get("client_id") != api_key_client_id
+        or increment_payload.get("requests_numb") != 1
+    ):
+        raise AssertionError("API-key client identification or first increment failed.")
+
+    status_response = requests.get(
+        f"{base_urls[1]}/status", headers=api_key_headers, timeout=2.0
+    )
+    status_payload = status_response.json()
+    if (
+        status_response.status_code != 200
+        or status_payload.get("client_id") != api_key_client_id
+        or status_payload.get("requests_numb") != 1
+    ):
+        raise AssertionError("API-key client state was not shared across servers.")
+
+    increment_response = requests.post(
+        f"{base_urls[1]}/increment", headers=api_key_headers, timeout=2.0
+    )
+    increment_payload = increment_response.json()
+    if (
+        increment_response.status_code != 200
+        or increment_payload.get("client_id") != api_key_client_id
+        or increment_payload.get("requests_numb") != 2
+    ):
+        raise AssertionError("API-key client count did not increment across servers.")
+
+    status_response = requests.get(
+        f"{base_urls[0]}/status", headers=api_key_headers, timeout=2.0
+    )
+    status_payload = status_response.json()
+    if (
+        status_response.status_code != 200
+        or status_payload.get("client_id") != api_key_client_id
+        or status_payload.get("requests_numb") != 2
+    ):
+        raise AssertionError("API-key client status did not reflect the shared count.")
+
+    reset_response = requests.post(
+        f"{base_urls[0]}/reset", headers=api_key_headers, timeout=2.0
+    )
+    if reset_response.status_code != 200:
+        raise AssertionError("Could not clean up API-key identified client.")
+
+    reset_response = requests.post(f"{base_urls[0]}/reset", timeout=2.0)
+    if reset_response.status_code != 200:
+        raise AssertionError("Could not reset IP-identified client.")
+
+    increment_response = requests.post(f"{base_urls[0]}/increment", timeout=2.0)
+    increment_payload = increment_response.json()
+    if (
+        increment_response.status_code != 200
+        or increment_payload.get("client_id") != ip_client_id
+        or increment_payload.get("requests_numb") != 1
+    ):
+        raise AssertionError("IP fallback identification or first increment failed.")
+
+    status_response = requests.get(f"{base_urls[1]}/status", timeout=2.0)
+    status_payload = status_response.json()
+    if (
+        status_response.status_code != 200
+        or status_payload.get("client_id") != ip_client_id
+        or status_payload.get("requests_numb") != 1
+    ):
+        raise AssertionError("IP-identified client state was not shared across servers.")
+
+    reset_response = requests.post(f"{base_urls[0]}/reset", timeout=2.0)
+    if reset_response.status_code != 200:
+        raise AssertionError("Could not clean up IP-identified client.")
+
+    print("API-key and IP client identification checks passed across servers.")
+
+
 def run_distributed_test() -> None:
     ports = [START_PORT + i for i in range(N_SERVERS)] # list of ports for app1..n
     base_urls = [f"http://{HOST}:{port}" for port in ports] # URL for app ports above
@@ -96,6 +283,9 @@ def run_distributed_test() -> None:
                 raise RuntimeError(f"Server failed to start properly: {base_url}")
 
         print(f"Started {N_SERVERS} application servers on ports: {ports}")
+        run_client_identification_test(base_urls)
+        run_fixed_window_test(base_urls)
+        run_naive_test(base_urls)
 
         # Reset tested client state
         requests.post(f"{base_urls[0]}/client/{CLIENT_ID}", timeout=2.0)
